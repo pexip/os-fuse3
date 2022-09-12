@@ -1,7 +1,8 @@
 Source: fuse3
 Section: utils
 Priority: optional
-Maintainer: Laszlo Boszormenyi (GCS) <gcs@debian.org>
+Maintainer: Pexip AS <packaging@pexip.com>
+XSBC-Pexip-Original-Maintainer: Laszlo Boszormenyi (GCS) <gcs@debian.org>
 Build-Depends:
  debhelper-compat (= 13),
  pkg-config,
@@ -12,6 +13,7 @@ Build-Depends:
 Standards-Version: 4.5.1
 Homepage: https://github.com/libfuse/libfuse/wiki
 Rules-Requires-Root: binary-targets
+XS-Pexip-Upstream: http://ftp.debian.org/debian/ bullseye
 
 Package: fuse3
 Section: utils
