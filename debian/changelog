@@ -1,4 +1,4 @@
-fuse3 (3.10.3-2pexip1) pexip; urgency=medium
+fuse3 (3.10.3-2pexip1) pexip-bullseye; urgency=medium
 
   * Prepare Pexip packaging
 
