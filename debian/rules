@@ -20,7 +20,8 @@ ifeq (,$(filter noudeb, $(DEB_BUILD_PROFILES)))
 endif
 
 override_dh_auto_configure:
-	dh_auto_configure -- -Ddefault_library=both $(DEB_CONFIGURE_EXTRA_FLAGS)
+	dh_auto_configure -- -Ddefault_library=both -Duseroot=false \
+		$(DEB_CONFIGURE_EXTRA_FLAGS)
 
 override_dh_compress:
 	dh_compress -Xusr/share/doc/libfuse3-dev/examples -XREADME.md
@@ -53,7 +54,10 @@ endif
 
 override_dh_auto_test:
 ifeq (,$(findstring nocheck,$(DEB_BUILD_OPTIONS)))
-	(cd obj-${DEB_HOST_GNU_TYPE}; python3 -m pytest test/) || true
+ifeq (,$(findstring $(DEB_BUILD_ARCH),powerpc ppc64 sparc64 s390x hppa))
+		(cd obj-${DEB_HOST_GNU_TYPE}; python3 -m pytest test/) \
+			|| true
+endif
 endif
 
 override_dh_link:
@@ -69,7 +73,7 @@ override_dh_missing:
 	dh_missing --fail-missing
 
 %:
-	dh ${@}
+	dh ${@} --buildsystem=meson
 
 .PHONY: override_dh_auto_configure override_dh_compress \
 	override_dh_fixperms override_dh_install \

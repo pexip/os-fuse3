@@ -4,12 +4,12 @@ Priority: optional
 Maintainer: Laszlo Boszormenyi (GCS) <gcs@debian.org>
 Build-Depends:
  debhelper-compat (= 13),
- pkg-config,
+ pkgconf,
  meson,
  udev [linux-any],
  python3 <!nocheck>,
  python3-pytest <!nocheck>
-Standards-Version: 4.5.1
+Standards-Version: 4.6.1
 Homepage: https://github.com/libfuse/libfuse/wiki
 Rules-Requires-Root: binary-targets
 
@@ -22,8 +22,7 @@ Depends:
  libfuse3-3 (= ${binary:Version}),
  adduser,
  mount (>= 2.19.1),
- sed (>= 4),
- lsb-base (>= 3.2-14)
+ sed (>= 4)
 Provides: fuse (= ${source:Version})
 Breaks: fuse
 Replaces: fuse

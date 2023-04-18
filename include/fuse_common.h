@@ -14,6 +14,12 @@
 #ifndef FUSE_COMMON_H_
 #define FUSE_COMMON_H_
 
+#ifdef HAVE_LIBFUSE_PRIVATE_CONFIG_H
+#include "fuse_config.h"
+#endif
+
+#include "libfuse_config.h"
+
 #include "fuse_opt.h"
 #include "fuse_log.h"
 #include <stdint.h>
@@ -23,7 +29,7 @@
 #define FUSE_MAJOR_VERSION 3
 
 /** Minor version of FUSE library interface */
-#define FUSE_MINOR_VERSION 10
+#define FUSE_MINOR_VERSION 14
 
 #define FUSE_MAKE_VERSION(maj, min)  ((maj) * 100 + (min))
 #define FUSE_VERSION FUSE_MAKE_VERSION(FUSE_MAJOR_VERSION, FUSE_MINOR_VERSION)
@@ -83,8 +89,12 @@ struct fuse_file_info {
 	    nothing when set by open()). */
 	unsigned int cache_readdir : 1;
 
+	/** Can be filled in by open, to indicate that flush is not needed
+	    on close. */
+	unsigned int noflush : 1;
+
 	/** Padding.  Reserved for future use*/
-	unsigned int padding : 25;
+	unsigned int padding : 24;
 	unsigned int padding2 : 32;
 
 	/** File handle id.  May be filled in by filesystem in create,
@@ -100,11 +110,20 @@ struct fuse_file_info {
 	uint32_t poll_events;
 };
 
+
+
 /**
  * Configuration parameters passed to fuse_session_loop_mt() and
  * fuse_loop_mt().
+ * Deprecated and replaced by a newer private struct in FUSE API
+ * version 312 (FUSE_MAKE_VERSION(3, 12)
  */
+#if FUSE_USE_VERSION < FUSE_MAKE_VERSION(3, 12)
+struct fuse_loop_config_v1; /* forward declarition */
 struct fuse_loop_config {
+#else
+struct fuse_loop_config_v1 {
+#endif
 	/**
 	 * whether to use separate device fds for each thread
 	 * (may increase performance)
@@ -123,6 +142,7 @@ struct fuse_loop_config {
 	 */
 	unsigned int max_idle_threads;
 };
+
 
 /**************************************************************************
  * Capability bits for 'fuse_conn_info.capable' and 'fuse_conn_info.want' *
@@ -393,6 +413,22 @@ struct fuse_loop_config {
  * This feature is disabled by default.
  */
 #define FUSE_CAP_EXPLICIT_INVAL_DATA    (1 << 25)
+
+/**
+ * Indicates support that dentries can be expired or invalidated.
+ * 
+ * Expiring dentries, instead of invalidating them, makes a difference for 
+ * overmounted dentries, where plain invalidation would detach all submounts 
+ * before dropping the dentry from the cache. If only expiry is set on the 
+ * dentry, then any overmounts are left alone and until ->d_revalidate() 
+ * is called.
+ * 
+ * Note: ->d_revalidate() is not called for the case of following a submount,
+ * so invalidation will only be triggered for the non-overmounted case. 
+ * The dentry could also be mounted in a different mount instance, in which case
+ * any submounts will still be detached.
+*/
+#define FUSE_CAP_EXPIRE_ONLY      (1 << 26)
 
 /**
  * Ioctl flags
@@ -829,6 +865,45 @@ int fuse_set_signal_handlers(struct fuse_session *se);
  * fuse_set_signal_handlers()
  */
 void fuse_remove_signal_handlers(struct fuse_session *se);
+
+/**
+ * Create and set default config for fuse_session_loop_mt and fuse_loop_mt.
+ *
+ * @return anonymous config struct
+ */
+struct fuse_loop_config *fuse_loop_cfg_create(void);
+
+/**
+ * Free the config data structure
+ */
+void fuse_loop_cfg_destroy(struct fuse_loop_config *config);
+
+/**
+ * fuse_loop_config setter to set the number of max idle threads.
+ */
+void fuse_loop_cfg_set_idle_threads(struct fuse_loop_config *config,
+				    unsigned int value);
+
+/**
+ * fuse_loop_config setter to set the number of max threads.
+ */
+void fuse_loop_cfg_set_max_threads(struct fuse_loop_config *config,
+				   unsigned int value);
+
+/**
+ * fuse_loop_config setter to enable the clone_fd feature
+ */
+void fuse_loop_cfg_set_clone_fd(struct fuse_loop_config *config,
+				unsigned int value);
+
+/**
+ * Convert old config to more recernt fuse_loop_config2
+ *
+ * @param config current config2 type
+ * @param v1_conf older config1 type (below FUSE API 312)
+ */
+void fuse_loop_cfg_convert(struct fuse_loop_config *config,
+			   struct fuse_loop_config_v1 *v1_conf);
 
 /* ----------------------------------------------------------- *
  * Compatibility stuff					       *

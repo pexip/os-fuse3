@@ -1,0 +1,66 @@
+From fcd293f675fc7bfa0522186c5d68ef932eec6945 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Matthias=20G=C3=B6rgens?= <matthias.goergens@gmail.com>
+Date: Fri, 14 Apr 2023 19:19:03 +0800
+Subject: [PATCH] Fix memory leak in high level API (#781)
+
+Previously, in the high level API if we received a signal between
+setting up signal handlers and processing INIT, we would leak
+
+```
+$ ./example/hello -s -d -f mountpoint/
+[9/9] Linking target example/hello_ll
+FUSE library version: 3.14.1
+nullpath_ok: 0
+
+=================================================================
+==178330==ERROR: LeakSanitizer: detected memory leaks
+
+Direct leak of 352 byte(s) in 1 object(s) allocated from:
+    #0 0x7fbb19abf411 in __interceptor_calloc /usr/src/debug/gcc/gcc/libsanitizer/asan/asan_malloc_linux.cpp:77
+    #1 0x7fbb1a0efd3b in fuse_fs_new ../lib/fuse.c:4814
+    #2 0x7fbb1a0f02b5 in fuse_new_31 ../lib/fuse.c:4913
+    #3 0x7fbb1a10ec5e in fuse_main_real ../lib/helper.c:345
+    #4 0x5625db8ab418 in main ../example/hello.c:176
+    #5 0x7fbb1983c78f  (/usr/lib/libc.so.6+0x2378f)
+
+SUMMARY: AddressSanitizer: 352 byte(s) leaked in 1 allocation(s).
+```
+
+That's because `fuse_lowlevel.c`s `fuse_session_destroy` would only call
+the user supplied `op.destroy`, if INIT had been processed, but the high
+level API relied on `op.destroy` to free `f->fs`.
+
+This patch moves the freeing into `fuse_destroy` that will always be
+called by our high-level API.
+---
+ lib/fuse.c | 3 +--
+ 1 file changed, 1 insertion(+), 2 deletions(-)
+
+diff --git a/lib/fuse.c b/lib/fuse.c
+index 6b42a69c..a7feced6 100644
+--- a/lib/fuse.c
++++ b/lib/fuse.c
+@@ -2623,7 +2623,6 @@ void fuse_fs_destroy(struct fuse_fs *fs)
+ 	fuse_get_context()->private_data = fs->user_data;
+ 	if (fs->op.destroy)
+ 		fs->op.destroy(fs->user_data);
+-	free(fs);
+ }
+ 
+ static void fuse_lib_destroy(void *data)
+@@ -2632,7 +2631,6 @@ static void fuse_lib_destroy(void *data)
+ 
+ 	fuse_create_context(f);
+ 	fuse_fs_destroy(f->fs);
+-	f->fs = NULL;
+ }
+ 
+ static void fuse_lib_lookup(fuse_req_t req, fuse_ino_t parent,
+@@ -5084,6 +5082,7 @@ void fuse_destroy(struct fuse *f)
+ 	free(f->name_table.array);
+ 	pthread_mutex_destroy(&f->lock);
+ 	fuse_session_destroy(f->se);
++	free(f->fs);
+ 	free(f->conf.modules);
+ 	free(f);
+ 	fuse_delete_context_key();

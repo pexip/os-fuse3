@@ -1,3 +1,84 @@
+fuse3 (3.14.0-4) unstable; urgency=medium
+
+  * Backport upstream fixes:
+    - fix max_threads command line parameter propagation,
+    - fix memory leak in high level API.
+
+ -- Laszlo Boszormenyi (GCS) <gcs@debian.org>  Tue, 18 Apr 2023 23:07:15 +0200
+
+fuse3 (3.14.0-3) unstable; urgency=medium
+
+  [ Helge Deller <deller@gmx.de> ]
+  * Add the big-endian hppa platform to the disabled self-testing list
+    (closes: #1032187).
+
+  [ Laszlo Boszormenyi (GCS) ]
+  * Update fuse header name in examples.
+  * Fix Makefile for examples (closes: #1031544).
+
+ -- Laszlo Boszormenyi (GCS) <gcs@debian.org>  Fri, 17 Mar 2023 20:51:05 +0100
+
+fuse3 (3.14.0-2) unstable; urgency=medium
+
+  * Revert upgrade of fuse_kernel.h for not being upstreamed yet
+    (closes: #1031524).
+
+ -- Laszlo Boszormenyi (GCS) <gcs@debian.org>  Sat, 18 Feb 2023 07:22:30 +0100
+
+fuse3 (3.14.0-1) unstable; urgency=medium
+
+  * New upstream release:
+    - fix header installation issue (closes: #1031455).
+
+ -- Laszlo Boszormenyi (GCS) <gcs@debian.org>  Fri, 17 Feb 2023 19:50:40 +0100
+
+fuse3 (3.13.1-1) unstable; urgency=medium
+
+  * New upstream release.
+
+ -- Laszlo Boszormenyi (GCS) <gcs@debian.org>  Fri, 10 Feb 2023 22:04:50 +0100
+
+fuse3 (3.13.0-2) unstable; urgency=medium
+
+  * Can't run self-testing on big-endian machines.
+
+ -- Laszlo Boszormenyi (GCS) <gcs@debian.org>  Sun, 22 Jan 2023 08:17:08 +0100
+
+fuse3 (3.13.0-1) unstable; urgency=medium
+
+  * New upstream release.
+
+ -- Laszlo Boszormenyi (GCS) <gcs@debian.org>  Tue, 17 Jan 2023 19:11:25 +0100
+
+fuse3 (3.12.0-1) unstable; urgency=medium
+
+  * New upstream release.
+  * Update library symbols for this release.
+  * Update watch file.
+  * Update Lintian overrides.
+  * Update Standards-Version to 4.6.1 .
+
+ -- Laszlo Boszormenyi (GCS) <gcs@debian.org>  Sat, 22 Oct 2022 21:28:52 +0200
+
+fuse3 (3.11.0-1) unstable; urgency=medium
+
+  * New upstream release.
+  * Update Standards-Version to 4.6.0.1 .
+
+ -- Laszlo Boszormenyi (GCS) <gcs@debian.org>  Sat, 07 May 2022 16:30:30 +0200
+
+fuse3 (3.10.5-1) unstable; urgency=medium
+
+  * New upstream release.
+
+ -- Laszlo Boszormenyi (GCS) <gcs@debian.org>  Thu, 16 Sep 2021 17:41:27 +0200
+
+fuse3 (3.10.4-1) unstable; urgency=medium
+
+  * New upstream release.
+
+ -- Laszlo Boszormenyi (GCS) <gcs@debian.org>  Mon, 23 Aug 2021 22:05:34 +0200
+
 fuse3 (3.10.3-2) unstable; urgency=medium
 
   * Do not try to alter cuse device permissions (closes: #947229, #989977).

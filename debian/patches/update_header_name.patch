@@ -1,0 +1,21 @@
+Description: use new header name of fuse
+ Just rename fuse_config.h to libfuse_config.h
+Author: Laszlo Boszormenyi (GCS) <gcs@debian.org>
+Bug-Debian: https://bugs.debian.org/1031544
+Forwarded: no
+Last-Update: 2023-03-17
+
+---
+
+
+--- fuse3-3.14.0.orig/example/poll_client.c
++++ fuse3-3.14.0/example/poll_client.c
+@@ -19,7 +19,7 @@
+  * \include poll_client.c
+  */
+ 
+-#include <fuse_config.h>
++#include <libfuse_config.h>
+ 
+ #include <sys/select.h>
+ #include <sys/time.h>
