@@ -13,7 +13,7 @@ Build-Depends:
 Standards-Version: 4.5.1
 Homepage: https://github.com/libfuse/libfuse/wiki
 Rules-Requires-Root: binary-targets
-XS-Pexip-Upstream: http://ftp.debian.org/debian/ bullseye
+XS-Pexip-Upstream: http://deb.debian.org/debian/ bookworm
 
 Package: fuse3
 Section: utils
