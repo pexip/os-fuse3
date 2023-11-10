@@ -11,7 +11,7 @@
 
 #define _GNU_SOURCE
 
-#include "config.h"
+#include "fuse_config.h"
 #include "fuse_i.h"
 #include "fuse_kernel.h"
 #include "fuse_opt.h"
@@ -123,6 +123,7 @@ static void list_add_req(struct fuse_req *req, struct fuse_req *next)
 
 static void destroy_req(fuse_req_t req)
 {
+	assert(req->ch == NULL);
 	pthread_mutex_destroy(&req->lock);
 	free(req);
 }
@@ -185,8 +186,15 @@ static int fuse_send_msg(struct fuse_session *se, struct fuse_chan *ch,
 		}
 	}
 
-	ssize_t res = writev(ch ? ch->fd : se->fd,
-			     iov, count);
+	ssize_t res;
+	if (se->io != NULL)
+		/* se->io->writev is never NULL if se->io is not NULL as
+		specified by fuse_session_custom_io()*/
+		res = se->io->writev(ch ? ch->fd : se->fd, iov, count,
+					   se->userdata);
+	else
+		res = writev(ch ? ch->fd : se->fd, iov, count);
+
 	int err = errno;
 
 	if (res == -1) {
@@ -395,6 +403,8 @@ static void fill_open(struct fuse_open_out *arg,
 		arg->open_flags |= FOPEN_CACHE_DIR;
 	if (f->nonseekable)
 		arg->open_flags |= FOPEN_NONSEEKABLE;
+	if (f->noflush)
+		arg->open_flags |= FOPEN_NOFLUSH;
 }
 
 int fuse_reply_entry(fuse_req_t req, const struct fuse_entry_param *e)
@@ -814,8 +824,14 @@ static int fuse_send_data_iov(struct fuse_session *se, struct fuse_chan *ch,
 	    (se->conn.want & FUSE_CAP_SPLICE_MOVE))
 		splice_flags |= SPLICE_F_MOVE;
 
-	res = splice(llp->pipe[0], NULL, ch ? ch->fd : se->fd,
-		     NULL, out->len, splice_flags);
+	if (se->io != NULL && se->io->splice_send != NULL) {
+		res = se->io->splice_send(llp->pipe[0], NULL,
+						  ch ? ch->fd : se->fd, NULL, out->len,
+					  	  splice_flags, se->userdata);
+	} else {
+		res = splice(llp->pipe[0], NULL, ch ? ch->fd : se->fd, NULL,
+			       out->len, splice_flags);
+	}
 	if (res == -1) {
 		res = -errno;
 		perror("fuse: splice from pipe");
@@ -1170,6 +1186,8 @@ static void do_setattr(fuse_req_t req, fuse_ino_t nodeid, const void *inarg)
 			FUSE_SET_ATTR_SIZE	|
 			FUSE_SET_ATTR_ATIME	|
 			FUSE_SET_ATTR_MTIME	|
+			FUSE_SET_ATTR_KILL_SUID |
+			FUSE_SET_ATTR_KILL_SGID |
 			FUSE_SET_ATTR_ATIME_NOW	|
 			FUSE_SET_ATTR_MTIME_NOW |
 			FUSE_SET_ATTR_CTIME;
@@ -1710,8 +1728,11 @@ static int find_interrupted(struct fuse_session *se, struct fuse_req *req)
 
 			pthread_mutex_lock(&se->lock);
 			curr->ctr--;
-			if (!curr->ctr)
+			if (!curr->ctr) {
+				fuse_chan_put(req->ch);
+				req->ch = NULL;
 				destroy_req(curr);
+			}
 
 			return 1;
 		}
@@ -1737,9 +1758,11 @@ static void do_interrupt(fuse_req_t req, fuse_ino_t nodeid, const void *inarg)
 	req->u.i.unique = arg->unique;
 
 	pthread_mutex_lock(&se->lock);
-	if (find_interrupted(se, req))
+	if (find_interrupted(se, req)) {
+		fuse_chan_put(req->ch);
+		req->ch = NULL;
 		destroy_req(req);
-	else
+	} else
 		list_add_req(req, &se->interrupts);
 	pthread_mutex_unlock(&se->lock);
 }
@@ -1754,7 +1777,9 @@ static struct fuse_req *check_interrupt(struct fuse_session *se,
 		if (curr->u.i.unique == req->unique) {
 			req->interrupted = 1;
 			list_del_req(curr);
-			free(curr);
+			fuse_chan_put(curr->ch);
+			curr->ch = NULL;
+			destroy_req(curr);
 			return NULL;
 		}
 	}
@@ -1898,7 +1923,8 @@ void do_init(fuse_req_t req, fuse_ino_t nodeid, const void *inarg)
 	struct fuse_session *se = req->se;
 	size_t bufsize = se->bufsize;
 	size_t outargsize = sizeof(outarg);
-
+	uint64_t inargflags = 0;
+	uint64_t outargflags = 0;
 	(void) nodeid;
 	if (se->debug) {
 		fuse_log(FUSE_LOG_DEBUG, "INIT: %u.%u\n", arg->major, arg->minor);
@@ -1933,43 +1959,46 @@ void do_init(fuse_req_t req, fuse_ino_t nodeid, const void *inarg)
 	if (arg->minor >= 6) {
 		if (arg->max_readahead < se->conn.max_readahead)
 			se->conn.max_readahead = arg->max_readahead;
-		if (arg->flags & FUSE_ASYNC_READ)
+		inargflags = arg->flags;
+		if (inargflags & FUSE_INIT_EXT)
+			inargflags = inargflags | (uint64_t) arg->flags2 << 32;
+		if (inargflags & FUSE_ASYNC_READ)
 			se->conn.capable |= FUSE_CAP_ASYNC_READ;
-		if (arg->flags & FUSE_POSIX_LOCKS)
+		if (inargflags & FUSE_POSIX_LOCKS)
 			se->conn.capable |= FUSE_CAP_POSIX_LOCKS;
-		if (arg->flags & FUSE_ATOMIC_O_TRUNC)
+		if (inargflags & FUSE_ATOMIC_O_TRUNC)
 			se->conn.capable |= FUSE_CAP_ATOMIC_O_TRUNC;
-		if (arg->flags & FUSE_EXPORT_SUPPORT)
+		if (inargflags & FUSE_EXPORT_SUPPORT)
 			se->conn.capable |= FUSE_CAP_EXPORT_SUPPORT;
-		if (arg->flags & FUSE_DONT_MASK)
+		if (inargflags & FUSE_DONT_MASK)
 			se->conn.capable |= FUSE_CAP_DONT_MASK;
-		if (arg->flags & FUSE_FLOCK_LOCKS)
+		if (inargflags & FUSE_FLOCK_LOCKS)
 			se->conn.capable |= FUSE_CAP_FLOCK_LOCKS;
-		if (arg->flags & FUSE_AUTO_INVAL_DATA)
+		if (inargflags & FUSE_AUTO_INVAL_DATA)
 			se->conn.capable |= FUSE_CAP_AUTO_INVAL_DATA;
-		if (arg->flags & FUSE_DO_READDIRPLUS)
+		if (inargflags & FUSE_DO_READDIRPLUS)
 			se->conn.capable |= FUSE_CAP_READDIRPLUS;
-		if (arg->flags & FUSE_READDIRPLUS_AUTO)
+		if (inargflags & FUSE_READDIRPLUS_AUTO)
 			se->conn.capable |= FUSE_CAP_READDIRPLUS_AUTO;
-		if (arg->flags & FUSE_ASYNC_DIO)
+		if (inargflags & FUSE_ASYNC_DIO)
 			se->conn.capable |= FUSE_CAP_ASYNC_DIO;
-		if (arg->flags & FUSE_WRITEBACK_CACHE)
+		if (inargflags & FUSE_WRITEBACK_CACHE)
 			se->conn.capable |= FUSE_CAP_WRITEBACK_CACHE;
-		if (arg->flags & FUSE_NO_OPEN_SUPPORT)
+		if (inargflags & FUSE_NO_OPEN_SUPPORT)
 			se->conn.capable |= FUSE_CAP_NO_OPEN_SUPPORT;
-		if (arg->flags & FUSE_PARALLEL_DIROPS)
+		if (inargflags & FUSE_PARALLEL_DIROPS)
 			se->conn.capable |= FUSE_CAP_PARALLEL_DIROPS;
-		if (arg->flags & FUSE_POSIX_ACL)
+		if (inargflags & FUSE_POSIX_ACL)
 			se->conn.capable |= FUSE_CAP_POSIX_ACL;
-		if (arg->flags & FUSE_HANDLE_KILLPRIV)
+		if (inargflags & FUSE_HANDLE_KILLPRIV)
 			se->conn.capable |= FUSE_CAP_HANDLE_KILLPRIV;
-		if (arg->flags & FUSE_CACHE_SYMLINKS)
+		if (inargflags & FUSE_CACHE_SYMLINKS)
 			se->conn.capable |= FUSE_CAP_CACHE_SYMLINKS;
-		if (arg->flags & FUSE_NO_OPENDIR_SUPPORT)
+		if (inargflags & FUSE_NO_OPENDIR_SUPPORT)
 			se->conn.capable |= FUSE_CAP_NO_OPENDIR_SUPPORT;
-		if (arg->flags & FUSE_EXPLICIT_INVAL_DATA)
+		if (inargflags & FUSE_EXPLICIT_INVAL_DATA)
 			se->conn.capable |= FUSE_CAP_EXPLICIT_INVAL_DATA;
-		if (!(arg->flags & FUSE_MAX_PAGES)) {
+		if (!(inargflags & FUSE_MAX_PAGES)) {
 			size_t max_bufsize =
 				FUSE_DEFAULT_MAX_PAGES_PER_REQ * getpagesize()
 				+ FUSE_BUFFER_HEADER_SIZE;
@@ -1977,6 +2006,8 @@ void do_init(fuse_req_t req, fuse_ino_t nodeid, const void *inarg)
 				bufsize = max_bufsize;
 			}
 		}
+		if (arg->minor >= 38)
+			se->conn.capable |= FUSE_CAP_EXPIRE_ONLY;
 	} else {
 		se->conn.max_readahead = 0;
 	}
@@ -1984,9 +2015,13 @@ void do_init(fuse_req_t req, fuse_ino_t nodeid, const void *inarg)
 	if (se->conn.proto_minor >= 14) {
 #ifdef HAVE_SPLICE
 #ifdef HAVE_VMSPLICE
-		se->conn.capable |= FUSE_CAP_SPLICE_WRITE | FUSE_CAP_SPLICE_MOVE;
+		if ((se->io == NULL) || (se->io->splice_send != NULL)) {
+			se->conn.capable |= FUSE_CAP_SPLICE_WRITE | FUSE_CAP_SPLICE_MOVE;
+		}
 #endif
-		se->conn.capable |= FUSE_CAP_SPLICE_READ;
+		if ((se->io == NULL) || (se->io->splice_receive != NULL)) {
+			se->conn.capable |= FUSE_CAP_SPLICE_READ;
+		}
 #endif
 	}
 	if (se->conn.proto_minor >= 18)
@@ -2060,39 +2095,47 @@ void do_init(fuse_req_t req, fuse_ino_t nodeid, const void *inarg)
 		outarg.flags |= FUSE_MAX_PAGES;
 		outarg.max_pages = (se->conn.max_write - 1) / getpagesize() + 1;
 	}
-
+	outargflags = outarg.flags;
 	/* Always enable big writes, this is superseded
 	   by the max_write option */
-	outarg.flags |= FUSE_BIG_WRITES;
+	outargflags |= FUSE_BIG_WRITES;
 
 	if (se->conn.want & FUSE_CAP_ASYNC_READ)
-		outarg.flags |= FUSE_ASYNC_READ;
+		outargflags |= FUSE_ASYNC_READ;
 	if (se->conn.want & FUSE_CAP_POSIX_LOCKS)
-		outarg.flags |= FUSE_POSIX_LOCKS;
+		outargflags |= FUSE_POSIX_LOCKS;
 	if (se->conn.want & FUSE_CAP_ATOMIC_O_TRUNC)
-		outarg.flags |= FUSE_ATOMIC_O_TRUNC;
+		outargflags |= FUSE_ATOMIC_O_TRUNC;
 	if (se->conn.want & FUSE_CAP_EXPORT_SUPPORT)
-		outarg.flags |= FUSE_EXPORT_SUPPORT;
+		outargflags |= FUSE_EXPORT_SUPPORT;
 	if (se->conn.want & FUSE_CAP_DONT_MASK)
-		outarg.flags |= FUSE_DONT_MASK;
+		outargflags |= FUSE_DONT_MASK;
 	if (se->conn.want & FUSE_CAP_FLOCK_LOCKS)
-		outarg.flags |= FUSE_FLOCK_LOCKS;
+		outargflags |= FUSE_FLOCK_LOCKS;
 	if (se->conn.want & FUSE_CAP_AUTO_INVAL_DATA)
-		outarg.flags |= FUSE_AUTO_INVAL_DATA;
+		outargflags |= FUSE_AUTO_INVAL_DATA;
 	if (se->conn.want & FUSE_CAP_READDIRPLUS)
-		outarg.flags |= FUSE_DO_READDIRPLUS;
+		outargflags |= FUSE_DO_READDIRPLUS;
 	if (se->conn.want & FUSE_CAP_READDIRPLUS_AUTO)
-		outarg.flags |= FUSE_READDIRPLUS_AUTO;
+		outargflags |= FUSE_READDIRPLUS_AUTO;
 	if (se->conn.want & FUSE_CAP_ASYNC_DIO)
-		outarg.flags |= FUSE_ASYNC_DIO;
+		outargflags |= FUSE_ASYNC_DIO;
 	if (se->conn.want & FUSE_CAP_WRITEBACK_CACHE)
-		outarg.flags |= FUSE_WRITEBACK_CACHE;
+		outargflags |= FUSE_WRITEBACK_CACHE;
 	if (se->conn.want & FUSE_CAP_POSIX_ACL)
-		outarg.flags |= FUSE_POSIX_ACL;
+		outargflags |= FUSE_POSIX_ACL;
 	if (se->conn.want & FUSE_CAP_CACHE_SYMLINKS)
-		outarg.flags |= FUSE_CACHE_SYMLINKS;
+		outargflags |= FUSE_CACHE_SYMLINKS;
 	if (se->conn.want & FUSE_CAP_EXPLICIT_INVAL_DATA)
-		outarg.flags |= FUSE_EXPLICIT_INVAL_DATA;
+		outargflags |= FUSE_EXPLICIT_INVAL_DATA;
+
+	if (inargflags & FUSE_INIT_EXT) {
+		outargflags |= FUSE_INIT_EXT;
+		outarg.flags2 = outargflags >> 32;
+	}
+
+	outarg.flags = outargflags;
+
 	outarg.max_readahead = se->conn.max_readahead;
 	outarg.max_write = se->conn.max_write;
 	if (se->conn.proto_minor >= 13) {
@@ -2246,21 +2289,24 @@ int fuse_lowlevel_notify_inval_inode(struct fuse_session *se, fuse_ino_t ino,
 	return send_notify_iov(se, FUSE_NOTIFY_INVAL_INODE, iov, 2);
 }
 
-int fuse_lowlevel_notify_inval_entry(struct fuse_session *se, fuse_ino_t parent,
-				     const char *name, size_t namelen)
+int fuse_lowlevel_notify_expire_entry(struct fuse_session *se, fuse_ino_t parent,
+				      const char *name, size_t namelen,
+				      enum fuse_expire_flags flags)
 {
 	struct fuse_notify_inval_entry_out outarg;
 	struct iovec iov[3];
 
 	if (!se)
 		return -EINVAL;
-	
+
 	if (se->conn.proto_minor < 12)
 		return -ENOSYS;
 
 	outarg.parent = parent;
 	outarg.namelen = namelen;
-	outarg.padding = 0;
+	outarg.flags = 0;
+	if (flags & FUSE_LL_EXPIRE_ONLY)
+		outarg.flags |= FUSE_EXPIRE_ONLY;
 
 	iov[1].iov_base = &outarg;
 	iov[1].iov_len = sizeof(outarg);
@@ -2269,6 +2315,13 @@ int fuse_lowlevel_notify_inval_entry(struct fuse_session *se, fuse_ino_t parent,
 
 	return send_notify_iov(se, FUSE_NOTIFY_INVAL_ENTRY, iov, 3);
 }
+
+int fuse_lowlevel_notify_inval_entry(struct fuse_session *se, fuse_ino_t parent,
+				     const char *name, size_t namelen)
+{
+	return fuse_lowlevel_notify_expire_entry(se, parent, name, namelen, 0);
+}
+
 
 int fuse_lowlevel_notify_delete(struct fuse_session *se,
 				fuse_ino_t parent, fuse_ino_t child,
@@ -2721,6 +2774,8 @@ void fuse_session_destroy(struct fuse_session *se)
 	free(se->cuse_data);
 	if (se->fd != -1)
 		close(se->fd);
+	if (se->io != NULL)
+		free(se->io);
 	destroy_mount_opts(se->mo);
 	free(se);
 }
@@ -2770,8 +2825,14 @@ int fuse_session_receive_buf_int(struct fuse_session *se, struct fuse_buf *buf,
 			goto fallback;
 	}
 
-	res = splice(ch ? ch->fd : se->fd,
-		     NULL, llp->pipe[1], NULL, bufsize, 0);
+	if (se->io != NULL && se->io->splice_receive != NULL) {
+		res = se->io->splice_receive(ch ? ch->fd : se->fd, NULL,
+						     llp->pipe[1], NULL, bufsize, 0,
+						     se->userdata);
+	} else {
+		res = splice(ch ? ch->fd : se->fd, NULL, llp->pipe[1], NULL,
+				 bufsize, 0);
+	}
 	err = errno;
 
 	if (fuse_session_exited(se))
@@ -2857,7 +2918,14 @@ fallback:
 	}
 
 restart:
-	res = read(ch ? ch->fd : se->fd, buf->mem, se->bufsize);
+	if (se->io != NULL) {
+		/* se->io->read is never NULL if se->io is not NULL as
+		specified by fuse_session_custom_io()*/
+		res = se->io->read(ch ? ch->fd : se->fd, buf->mem, se->bufsize,
+					 se->userdata);
+	} else {
+		res = read(ch ? ch->fd : se->fd, buf->mem, se->bufsize);
+	}
 	err = errno;
 
 	if (fuse_session_exited(se))
@@ -2985,6 +3053,40 @@ out2:
 	free(se);
 out1:
 	return NULL;
+}
+
+int fuse_session_custom_io(struct fuse_session *se, const struct fuse_custom_io *io,
+			   int fd)
+{
+	if (fd < 0) {
+		fuse_log(FUSE_LOG_ERR, "Invalid file descriptor value %d passed to "
+			"fuse_session_custom_io()\n", fd);
+		return -EBADF;
+	}
+	if (io == NULL) {
+		fuse_log(FUSE_LOG_ERR, "No custom IO passed to "
+			"fuse_session_custom_io()\n");
+		return -EINVAL;
+	} else if (io->read == NULL || io->writev == NULL) {
+		/* If the user provides their own file descriptor, we can't
+		guarantee that the default behavior of the io operations made
+		in libfuse will function properly. Therefore, we enforce the
+		user to implement these io operations when using custom io. */
+		fuse_log(FUSE_LOG_ERR, "io passed to fuse_session_custom_io() must "
+			"implement both io->read() and io->writev\n");
+		return -EINVAL;
+	}
+
+	se->io = malloc(sizeof(struct fuse_custom_io));
+	if (se->io == NULL) {
+		fuse_log(FUSE_LOG_ERR, "Failed to allocate memory for custom io. "
+			"Error: %s\n", strerror(errno));
+		return -errno;
+	}
+
+	se->fd = fd;
+	*se->io = *io;
+	return 0;
 }
 
 int fuse_session_mount(struct fuse_session *se, const char *mountpoint)

@@ -2,13 +2,6 @@
 
 set -e
 
-# Disable leak checking for now, there are some issues (or false positives)
-# that we still need to fix
-export ASAN_OPTIONS="detect_leaks=0"
-
-export LSAN_OPTIONS="suppressions=$(pwd)/test/lsan_suppress.txt"
-export CC
-
 TEST_CMD="python3 -m pytest --maxfail=99 test/"
 
 # Make sure binaries can be accessed when invoked by root.
@@ -23,9 +16,16 @@ SOURCE_DIR="$(readlink -f .)"
 TEST_DIR="$(mktemp -dt libfuse-build-XXXXXX)"
 chmod 0755 "${TEST_DIR}"
 cd "${TEST_DIR}"
+echo "Running in ${TEST_DIR}"
+
+cp -v "${SOURCE_DIR}/test/lsan_suppress.txt" .
+export LSAN_OPTIONS="suppressions=$(pwd)/lsan_suppress.txt"
+export ASAN_OPTIONS="detect_leaks=1"
+export CC
 
 # Standard build
-for CC in gcc gcc-7 gcc-10 clang; do
+for CC in gcc gcc-9 gcc-10 clang; do
+    echo "=== Building with ${CC} ==="
     mkdir build-${CC}; cd build-${CC}
     if [ "${CC}" == "clang" ]; then
         export CXX="clang++"
@@ -50,14 +50,20 @@ for CC in gcc gcc-7 gcc-10 clang; do
 done
 (cd build-$CC; sudo ninja install)
 
-# Sanitized build
-CC=clang
-CXX=clang++
-for san in undefined address; do
-    mkdir build-${san}; cd build-${san}
+sanitized_build()
+{
+    san=$1
+    additonal_option=$2
+
+    echo "=== Building with clang and ${san} sanitizer ==="
+    [ -n ${additonal_option} ] || echo "Additional option: ${additonal_option}"
+
+    mkdir build-${san}; pushd build-${san}
+
     # b_lundef=false is required to work around clang
     # bug, cf. https://groups.google.com/forum/#!topic/mesonbuild/tgEdAXIIdC4
-    meson -D b_sanitize=${san} -D b_lundef=false -D werror=true "${SOURCE_DIR}" \
+    meson -D b_sanitize=${san} -D b_lundef=false -D werror=true\
+           ${additonal_option} "${SOURCE_DIR}" \
            || (cat meson-logs/meson-log.txt; false)
     ninja
 
@@ -65,11 +71,27 @@ for san in undefined address; do
     sudo ${TEST_CMD}
     sudo chown root:root util/fusermount3
     sudo chmod 4755 util/fusermount3
-    # Cleanup temporary files (since they're now owned by root)
+    # Cleanup temporary files (since they are now owned by root)
     sudo rm -rf test/.pytest_cache/ test/__pycache__
 
     ${TEST_CMD}
-    cd ..
+    
+    popd
+    rm -fr build-${san}
+}
+
+# Sanitized build
+CC=clang
+CXX=clang++
+for san in undefined address; do
+    sanitized_build ${san}
+done
+
+# Sanitized build without libc versioned symbols
+CC=clang
+CXX=clang++
+for san in undefined address; do
+    sanitized_build ${san} "-Ddisable-libc-symbol-version=true"
 done
 
 # Documentation.

@@ -6,3 +6,4 @@ libfuse3.so.3 #PACKAGE# #MINVER#
  (symver)FUSE_3.3 3.4.1
  (symver)FUSE_3.4 3.4.1
  (symver)FUSE_3.7 3.7.0
+ (symver)FUSE_3.12 3.12.0

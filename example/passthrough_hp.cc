@@ -43,11 +43,7 @@
  * \include passthrough_hp.cc
  */
 
-#define FUSE_USE_VERSION 35
-
-#ifdef HAVE_CONFIG_H
-#include "config.h"
-#endif
+#define FUSE_USE_VERSION FUSE_MAKE_VERSION(3, 12)
 
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
@@ -81,6 +77,9 @@
 #include <iomanip>
 
 using namespace std;
+
+#define SFS_DEFAULT_THREADS "-1" // take libfuse value as default
+#define SFS_DEFAULT_CLONE_FD "0"
 
 /* We are re-using pointers to our `struct sfs_inode` and `struct
    sfs_dirp` elements as inodes and file handles. This means that we
@@ -123,6 +122,8 @@ struct Inode {
     int fd {-1};
     dev_t src_dev {0};
     ino_t src_ino {0};
+    int generation {0};
+    uint64_t nopen {0};
     uint64_t nlookup {0};
     std::mutex m;
 
@@ -147,11 +148,15 @@ struct Fs {
     Inode root;
     double timeout;
     bool debug;
+    bool debug_fuse;
+    bool foreground;
     std::string source;
     size_t blocksize;
     dev_t src_dev;
     bool nosplice;
     bool nocache;
+    size_t num_threads;
+    bool clone_fd;
 };
 static Fs fs{};
 
@@ -192,13 +197,19 @@ static void sfs_init(void *userdata, fuse_conn_info *conn) {
     if (conn->capable & FUSE_CAP_FLOCK_LOCKS)
         conn->want |= FUSE_CAP_FLOCK_LOCKS;
 
-    // Use splicing if supported. Since we are using writeback caching
-    // and readahead, individual requests should have a decent size so
-    // that splicing between fd's is well worth it.
-    if (conn->capable & FUSE_CAP_SPLICE_WRITE && !fs.nosplice)
-        conn->want |= FUSE_CAP_SPLICE_WRITE;
-    if (conn->capable & FUSE_CAP_SPLICE_READ && !fs.nosplice)
-        conn->want |= FUSE_CAP_SPLICE_READ;
+    if (fs.nosplice) {
+        // FUSE_CAP_SPLICE_READ is enabled in libfuse3 by default,
+        // see do_init() in in fuse_lowlevel.c
+        // Just unset both, in case FUSE_CAP_SPLICE_WRITE would also get enabled
+        // by detault.
+        conn->want &= ~FUSE_CAP_SPLICE_READ;
+        conn->want &= ~FUSE_CAP_SPLICE_WRITE;
+    } else {
+        if (conn->capable & FUSE_CAP_SPLICE_WRITE)
+            conn->want |= FUSE_CAP_SPLICE_WRITE;
+        if (conn->capable & FUSE_CAP_SPLICE_READ)
+            conn->want |= FUSE_CAP_SPLICE_READ;
+    }
 }
 
 
@@ -340,14 +351,29 @@ static int do_lookup(fuse_ino_t parent, const char *name,
     }
     e->ino = reinterpret_cast<fuse_ino_t>(inode_p);
     Inode& inode {*inode_p};
+    e->generation = inode.generation;
 
-    if(inode.fd != -1) { // found existing inode
+    if (inode.fd == -ENOENT) { // found unlinked inode
+        if (fs.debug)
+            cerr << "DEBUG: lookup(): inode " << e->attr.st_ino
+                 << " recycled; generation=" << inode.generation << endl;
+	/* fallthrough to new inode but keep existing inode.nlookup */
+    }
+
+    if (inode.fd > 0) { // found existing inode
         fs_lock.unlock();
         if (fs.debug)
             cerr << "DEBUG: lookup(): inode " << e->attr.st_ino
-                 << " (userspace) already known." << endl;
+                 << " (userspace) already known; fd = " << inode.fd << endl;
         lock_guard<mutex> g {inode.m};
+
         inode.nlookup++;
+        if (fs.debug)
+            cerr << "DEBUG:" << __func__ << ":" << __LINE__ << " "
+                 <<  "inode " << inode.src_ino
+                 << " count " << inode.nlookup << endl;
+
+
         close(newfd);
     } else { // no existing inode
         /* This is just here to make Helgrind happy. It violates the
@@ -357,13 +383,19 @@ static int do_lookup(fuse_ino_t parent, const char *name,
         lock_guard<mutex> g {inode.m};
         inode.src_ino = e->attr.st_ino;
         inode.src_dev = e->attr.st_dev;
-        inode.nlookup = 1;
+
+        inode.nlookup++;
+        if (fs.debug)
+            cerr << "DEBUG:" << __func__ << ":" << __LINE__ << " "
+                 <<  "inode " << inode.src_ino
+                 << " count " << inode.nlookup << endl;
+
         inode.fd = newfd;
         fs_lock.unlock();
 
         if (fs.debug)
             cerr << "DEBUG: lookup(): created userspace inode " << e->attr.st_ino
-                 << endl;
+                 << "; fd = " << inode.fd << endl;
     }
 
     return 0;
@@ -464,6 +496,10 @@ static void sfs_link(fuse_req_t req, fuse_ino_t ino, fuse_ino_t parent,
     {
         lock_guard<mutex> g {inode.m};
         inode.nlookup++;
+        if (fs.debug)
+            cerr << "DEBUG:" << __func__ << ":" << __LINE__ << " "
+                 <<  "inode " << inode.src_ino
+                 << " count " << inode.nlookup << endl;
     }
 
     fuse_reply_entry(req, &e);
@@ -496,6 +532,33 @@ static void sfs_rename(fuse_req_t req, fuse_ino_t parent, const char *name,
 
 static void sfs_unlink(fuse_req_t req, fuse_ino_t parent, const char *name) {
     Inode& inode_p = get_inode(parent);
+    // Release inode.fd before last unlink like nfsd EXPORT_OP_CLOSE_BEFORE_UNLINK
+    // to test reused inode numbers.
+    // Skip this when inode has an open file and when writeback cache is enabled.
+    if (!fs.timeout) {
+	    fuse_entry_param e;
+	    auto err = do_lookup(parent, name, &e);
+	    if (err) {
+		    fuse_reply_err(req, err);
+		    return;
+	    }
+	    if (e.attr.st_nlink == 1) {
+		    Inode& inode = get_inode(e.ino);
+		    lock_guard<mutex> g {inode.m};
+		    if (inode.fd > 0 && !inode.nopen) {
+			    if (fs.debug)
+				    cerr << "DEBUG: unlink: release inode " << e.attr.st_ino
+					    << "; fd=" << inode.fd << endl;
+			    lock_guard<mutex> g_fs {fs.mutex};
+			    close(inode.fd);
+			    inode.fd = -ENOENT;
+			    inode.generation++;
+		    }
+	    }
+
+        // decrease the ref which lookup above had increased
+        forget_one(e.ino, 1);
+    }
     auto res = unlinkat(inode_p.fd, name, 0);
     fuse_reply_err(req, res == -1 ? errno : 0);
 }
@@ -511,6 +574,12 @@ static void forget_one(fuse_ino_t ino, uint64_t n) {
         abort();
     }
     inode.nlookup -= n;
+
+    if (fs.debug)
+        cerr << "DEBUG:" << __func__ << ":" << __LINE__ << " "
+             <<  "inode " << inode.src_ino
+             << " count " << inode.nlookup << endl;
+
     if (!inode.nlookup) {
         if (fs.debug)
             cerr << "DEBUG: forget: cleaning up inode " << inode.src_ino << endl;
@@ -622,7 +691,7 @@ static bool is_dot_or_dotdot(const char *name) {
 
 
 static void do_readdir(fuse_req_t req, fuse_ino_t ino, size_t size,
-                    off_t offset, fuse_file_info *fi, int plus) {
+                    off_t offset, fuse_file_info *fi, const int plus) {
     auto d = get_dir_handle(fi);
     Inode& inode = get_inode(ino);
     lock_guard<mutex> g {inode.m};
@@ -667,28 +736,23 @@ static void do_readdir(fuse_req_t req, fuse_ino_t ino, size_t size,
 
         fuse_entry_param e{};
         size_t entsize;
-        if(plus) {
+        if (plus) {
             err = do_lookup(ino, entry->d_name, &e);
             if (err)
                 goto error;
             entsize = fuse_add_direntry_plus(req, p, rem, entry->d_name, &e, entry->d_off);
-
-            if (entsize > rem) {
-                if (fs.debug)
-                    cerr << "DEBUG: readdir(): buffer full, returning data. " << endl;
-                forget_one(e.ino, 1);
-                break;
-            }
         } else {
             e.attr.st_ino = entry->d_ino;
             e.attr.st_mode = entry->d_type << 12;
             entsize = fuse_add_direntry(req, p, rem, entry->d_name, &e.attr, entry->d_off);
+        }
 
-            if (entsize > rem) {
-                if (fs.debug)
-                    cerr << "DEBUG: readdir(): buffer full, returning data. " << endl;
-                break;
-            }
+        if (entsize > rem) {
+            if (fs.debug)
+                cerr << "DEBUG: readdir(): buffer full, returning data. " << endl;
+            if (plus)
+                forget_one(e.ino, 1);
+            break;
         }
 
         p += entsize;
@@ -764,8 +828,13 @@ static void sfs_create(fuse_req_t req, fuse_ino_t parent, const char *name,
         if (err == ENFILE || err == EMFILE)
             cerr << "ERROR: Reached maximum number of file descriptors." << endl;
         fuse_reply_err(req, err);
-    } else
-        fuse_reply_create(req, &e, fi);
+	return;
+    }
+
+    Inode& inode = get_inode(e.ino);
+    lock_guard<mutex> g {inode.m};
+    inode.nopen++;
+    fuse_reply_create(req, &e, fi);
 }
 
 
@@ -814,14 +883,19 @@ static void sfs_open(fuse_req_t req, fuse_ino_t ino, fuse_file_info *fi) {
         return;
     }
 
+    lock_guard<mutex> g {inode.m};
+    inode.nopen++;
     fi->keep_cache = (fs.timeout != 0);
+    fi->noflush = (fs.timeout == 0 && (fi->flags & O_ACCMODE) == O_RDONLY);
     fi->fh = fd;
     fuse_reply_open(req, fi);
 }
 
 
 static void sfs_release(fuse_req_t req, fuse_ino_t ino, fuse_file_info *fi) {
-    (void) ino;
+    Inode& inode = get_inode(ino);
+    lock_guard<mutex> g {inode.m};
+    inode.nopen--;
     close(fi->fh);
     fuse_reply_err(req, 0);
 }
@@ -1100,10 +1174,16 @@ static cxxopts::ParseResult parse_options(int argc, char **argv) {
     opt_parser.add_options()
         ("debug", "Enable filesystem debug messages")
         ("debug-fuse", "Enable libfuse debug messages")
+        ("foreground", "Run in foreground")
         ("help", "Print help")
         ("nocache", "Disable all caching")
         ("nosplice", "Do not use splice(2) to transfer data")
-        ("single", "Run single-threaded");
+        ("single", "Run single-threaded")
+        ("num-threads", "Number of libfuse worker threads",
+                        cxxopts::value<int>()->default_value(SFS_DEFAULT_THREADS))
+        ("clone-fd", "use separate fuse device fd for each thread",
+                        cxxopts::value<bool>()->implicit_value(SFS_DEFAULT_CLONE_FD));
+
 
     // FIXME: Find a better way to limit the try clause to just
     // opt_parser.parse() (cf. https://github.com/jarro2783/cxxopts/issues/146)
@@ -1125,8 +1205,20 @@ static cxxopts::ParseResult parse_options(int argc, char **argv) {
     }
 
     fs.debug = options.count("debug") != 0;
+    fs.debug_fuse = options.count("debug-fuse") != 0;
+
+    fs.foreground = options.count("foreground") != 0;
+    if (fs.debug || fs.debug_fuse)
+        fs.foreground = true;
+
     fs.nosplice = options.count("nosplice") != 0;
-    fs.source = std::string {realpath(argv[1], NULL)};
+    fs.num_threads = options["num-threads"].as<int>();
+    fs.clone_fd = options["clone-fd"].as<bool>();
+    char* resolved_path = realpath(argv[1], NULL);
+    if (resolved_path == NULL)
+        warn("WARNING: realpath() failed with");
+    fs.source = std::string {resolved_path};
+    free(resolved_path);
 
     return options;
 }
@@ -1148,8 +1240,11 @@ static void maximize_fd_limit() {
 
 int main(int argc, char *argv[]) {
 
+    struct fuse_loop_config *loop_config = NULL;
+
     // Parse command line options
     auto options {parse_options(argc, argv)};
+
 
     // We need an fd for every dentry in our the filesystem that the
     // kernel knows about. This is way more than most processes need,
@@ -1178,7 +1273,7 @@ int main(int argc, char *argv[]) {
     if (fuse_opt_add_arg(&args, argv[0]) ||
         fuse_opt_add_arg(&args, "-o") ||
         fuse_opt_add_arg(&args, "default_permissions,fsname=hpps") ||
-        (options.count("debug-fuse") && fuse_opt_add_arg(&args, "-odebug")))
+        (fs.debug_fuse && fuse_opt_add_arg(&args, "-odebug")))
         errx(3, "ERROR: Out of memory");
 
     fuse_lowlevel_ops sfs_oper {};
@@ -1193,16 +1288,21 @@ int main(int argc, char *argv[]) {
     // Don't apply umask, use modes exactly as specified
     umask(0);
 
+    fuse_daemonize(fs.foreground);
+
     // Mount and run main loop
-    struct fuse_loop_config loop_config;
-    loop_config.clone_fd = 0;
-    loop_config.max_idle_threads = 10;
+    loop_config = fuse_loop_cfg_create();
+
+    if (fs.num_threads != -1)
+        fuse_loop_cfg_set_idle_threads(loop_config, fs.num_threads);
+
     if (fuse_session_mount(se, argv[2]) != 0)
         goto err_out3;
     if (options.count("single"))
         ret = fuse_session_loop(se);
     else
-        ret = fuse_session_loop_mt(se, &loop_config);
+        ret = fuse_session_loop_mt(se, loop_config);
+
 
     fuse_session_unmount(se);
 
@@ -1211,6 +1311,8 @@ err_out3:
 err_out2:
     fuse_session_destroy(se);
 err_out1:
+
+    fuse_loop_cfg_destroy(loop_config);
     fuse_opt_free_args(&args);
 
     return ret ? 1 : 0;
