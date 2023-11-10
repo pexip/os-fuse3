@@ -37,8 +37,6 @@
 #define _GNU_SOURCE
 #define FUSE_USE_VERSION 34
 
-#include "config.h"
-
 #include <fuse_lowlevel.h>
 #include <unistd.h>
 #include <stdlib.h>
@@ -127,6 +125,23 @@ static const struct fuse_opt lo_opts[] = {
 	FUSE_OPT_END
 };
 
+static void passthrough_ll_help(void)
+{
+	printf(
+"    -o writeback           Enable writeback\n"
+"    -o no_writeback        Disable write back\n"
+"    -o source=/home/dir    Source directory to be mounted\n"
+"    -o flock               Enable flock\n"
+"    -o no_flock            Disable flock\n"
+"    -o xattr               Enable xattr\n"
+"    -o no_xattr            Disable xattr\n"
+"    -o timeout=1.0         Caching timeout\n"
+"    -o timeout=0/1         Timeout is set\n"
+"    -o cache=never         Disable cache\n"
+"    -o cache=auto          Auto enable cache\n"
+"    -o cache=always        Cache always\n");
+}
+
 static struct lo_data *lo_data(fuse_req_t req)
 {
 	return (struct lo_data *) fuse_req_userdata(req);
@@ -168,6 +183,17 @@ static void lo_init(void *userdata,
 		if (lo->debug)
 			fuse_log(FUSE_LOG_DEBUG, "lo_init: activating flock locks\n");
 		conn->want |= FUSE_CAP_FLOCK_LOCKS;
+	}
+}
+
+static void lo_destroy(void *userdata)
+{
+	struct lo_data *lo = (struct lo_data*) userdata;
+
+	while (lo->root.next != &lo->root) {
+		struct lo_inode* next = lo->root.next;
+		lo->root.next = next->next;
+		free(next);
 	}
 }
 
@@ -1113,6 +1139,7 @@ static void lo_lseek(fuse_req_t req, fuse_ino_t ino, off_t off, int whence,
 
 static const struct fuse_lowlevel_ops lo_oper = {
 	.init		= lo_init,
+	.destroy	= lo_destroy,
 	.lookup		= lo_lookup,
 	.mkdir		= lo_mkdir,
 	.mknod		= lo_mknod,
@@ -1175,6 +1202,7 @@ int main(int argc, char *argv[])
 		printf("usage: %s [options] <mountpoint>\n\n", argv[0]);
 		fuse_cmdline_help();
 		fuse_lowlevel_help();
+		passthrough_ll_help();
 		ret = 0;
 		goto err_out1;
 	} else if (opts.show_version) {

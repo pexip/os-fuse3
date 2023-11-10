@@ -17,6 +17,8 @@ import tempfile
 import time
 import errno
 import sys
+import platform
+from distutils.version import LooseVersion
 from tempfile import NamedTemporaryFile
 from contextlib import contextmanager
 from util import (wait_for_mount, umount, cleanup, base_cmdline,
@@ -195,6 +197,8 @@ def test_passthrough_hp(short_tmpdir, cache, output_checker):
               [ pjoin(basename, 'example', 'passthrough_hp'),
                 src_dir, mnt_dir ]
 
+    cmdline.append('--foreground')
+
     if not cache:
         cmdline.append('--nocache')
         
@@ -240,6 +244,11 @@ def test_passthrough_hp(short_tmpdir, cache, output_checker):
         if not cache:
             syscall_test_cmd = [ os.path.join(basename, 'test', 'test_syscalls'),
                              mnt_dir, ':' + src_dir ]
+            # unlinked testfiles check fails without kernel fix
+            # "fuse: fix illegal access to inode with reused nodeid"
+            # so opt-in for this test from kernel 5.14
+            if LooseVersion(platform.release()) >= '5.14':
+                syscall_test_cmd.append('-u')
             subprocess.check_call(syscall_test_cmd)
     except:
         cleanup(mount_process, mnt_dir)
@@ -324,8 +333,9 @@ def test_null(tmpdir, output_checker):
 
 @pytest.mark.skipif(fuse_proto < (7,12),
                     reason='not supported by running kernel')
+@pytest.mark.parametrize("only_expire", ("invalidate_entries", "expire_entries"))
 @pytest.mark.parametrize("notify", (True, False))
-def test_notify_inval_entry(tmpdir, notify, output_checker):
+def test_notify_inval_entry(tmpdir, only_expire, notify, output_checker):
     mnt_dir = str(tmpdir)
     cmdline = base_cmdline + \
               [ pjoin(basename, 'example', 'notify_inval_entry'),
@@ -333,6 +343,8 @@ def test_notify_inval_entry(tmpdir, notify, output_checker):
                 '--timeout=5', mnt_dir ]
     if not notify:
         cmdline.append('--no-notify')
+    if only_expire == "expire_entries":
+        cmdline.append('--only-expire')
     mount_process = subprocess.Popen(cmdline, stdout=output_checker.fd,
                                      stderr=output_checker.fd)
     try:
