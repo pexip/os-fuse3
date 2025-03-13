@@ -1,3 +1,105 @@
+libfuse 3.17.1-rc1 (2025-02-18)
+===============================
+- several BSD fixes
+- x86 (32bit) build fixes
+- nested declarations moved out of the inlined functions to avoid
+  build warnings
+- signify public key added for future 3.18
+
+libfuse 3.17.1-rc0 (2025-02.10)
+===============================
+
+* Fix libfuse build with FUSE_USE_VERSION 30
+* Fix build of memfs_ll without manual meson reconfigure
+* Fix junk readdirplus results when filesystem not filling stat info
+* Fix conn.want_ext truncation to 32bit
+* Fix some build warnings with -Og
+* Fix fuse_main_real symbols
+* Several changes related to functions/symbols that added in
+  the libfuse version in 3.17
+* Add thread names to libfuse threads
+* With auto-umounts the FUSE_COMMFD2 (parent process fd is
+  exported to be able to silence leak checkers
+
+
+libfuse 3.17 (2025-01-01, not officially releaesed)
+==================================================
+
+* 3.11 and 3.14.2 introduced ABI incompatibilities, the ABI is restored
+  to 3.10, .so version was increased since there were releases with
+  the incompatible ABI
+
+* The libfuse version a program was compiled against is now encoded into
+  that program, using inlined functions in fuse_lowlevel.h and fuse.h
+* Allows to handle fatal signals and to print a backtrace.
+  New API function: fuse_set_fail_signal_handlers()
+
+* Allows fuse_log() messages to be send to syslog instead of stderr
+  New API functions: fuse_log_enable_syslog() and fuse_log_close_syslog()
+
+* Handle buffer misalignment for FUSE_WRITE
+
+* Added support for filesystem passthrough read/write of files when
+  FUSE_PASSTHROUGH capability is enabled
+  New API functions:  fuse_passthrough_open() and fuse_passthrough_close(),
+                      also see example/passthrough_hp.cc
+
+* Added fmask and dmask options to high-level API
+  - dmask: umask applied to directories
+  - fmask: umask applied to non-directories
+
+* Added FUSE_FILL_DIR_DEFAULTS enum to support C++ programs using
+  fuse_fill_dir_t function
+
+* Added support for FUSE_CAP_HANDLE_KILLPRIV_V2
+
+Fixes:
+* Fixed compilation failure on FreeBSD (mount_bsd.c now points to correct
+  header)
+
+libfuse 3.16.2 (2023-10-10)
+===========================
+
+* Various small fixes and improvements.
+
+libfuse 3.16.1 (2023-08-08)
+===========================
+
+* Readdir kernel cache can be enabled from high-level API.
+
+libfuse 3.15.1 (2023-07-05)
+===========================
+
+Future libfuse releases will be signed with `signify`_ rather than PGP (rationale_). This
+release is the last to be signed with PGP and contains the signify public key for current
+(3.15.X) and upcoming  (3.16.X) minor release cycle.
+
+.. _signify:  https://www.openbsd.org/papers/bsdcan-signify.html
+.. _rationale: https://latacora.micro.blog/2019/07/16/the-pgp-problem.html
+
+
+libfuse 3.15.0 (2023-06-09)
+===========================
+
+* Improved support for some less common systems (32 bit, alternative libcs)
+
+* Unsupported mount options are no longer silently accepted.
+
+* auto_unmount is now compatible with allow_other.
+
+
+libfuse 3.14.1 (2023-03-26)
+===========================
+
+* The extended attribute name passed to the setxattr() handler is no longer
+  truncated at the beginning (bug introduced in 3.13.0).
+  
+* As a result of the above, the additional setattr() flags introduced in 3.14 are no
+  longer available for now. They will hopefully be reintroduced in the next release.
+
+* Further improvements of configuration header handling.
+
+
 libfuse 3.14.0 (2023-02-17)
 ===========================
 
@@ -45,7 +147,7 @@ The following changes apply when using the most recent API (-DFUSE_USE_VERSION=3
 see `example/passthrough_hp.cc` for an example for how to usse the new API):
 
 * `struct fuse_loop_config` is now private and has to be constructed using
-  *fuse_loop_cfg_create()* and detroyed with *fuse_loop_cfg_destroy()*.  Parameters can be
+  *fuse_loop_cfg_create()* and destroyed with *fuse_loop_cfg_destroy()*.  Parameters can be
   changed using `fuse_loop_cfg_set_*()` functions.
 
 * *fuse_session_loop_mt()* now accepts `struct fuse_loop_config *` as NULL pointer.

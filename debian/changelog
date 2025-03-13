@@ -1,3 +1,73 @@
+fuse3 (3.17.1~rc1-3) unstable; urgency=medium
+
+  * Backport upstream fix for mount: fix closing stdout/err and error logs.
+
+ -- Laszlo Boszormenyi (GCS) <gcs@debian.org>  Thu, 13 Mar 2025 15:30:01 +0100
+
+fuse3 (3.17.1~rc1-2) experimental; urgency=medium
+
+  * Link examples with atomic on armel, m68k and powerpc architectures.
+
+ -- Laszlo Boszormenyi (GCS) <gcs@debian.org>  Sat, 22 Feb 2025 07:44:45 +0100
+
+fuse3 (3.17.1~rc1-1) experimental; urgency=medium
+
+  * New major upstream release candidate version.
+
+ -- Laszlo Boszormenyi (GCS) <gcs@debian.org>  Wed, 19 Feb 2025 17:29:04 +0100
+
+fuse3 (3.17.1~rc0-1) experimental; urgency=medium
+
+  * New major upstream release candidate version (closes: #1095239):
+    - fixes ABI breaks (closes: #1031802),
+    - fixes max threads value warning (closes: #1037410).
+  * Library transition from libfuse3-3 to libfuse3-4.
+
+ -- Laszlo Boszormenyi (GCS) <gcs@debian.org>  Fri, 14 Feb 2025 22:49:04 +0100
+
+fuse3 (3.14.0-10) unstable; urgency=medium
+
+  [ Helmut Grohne <helmut@subdivi.de> ]
+  * Upgrade Breaks for fuse to Conflicts to prevent accidental file loss
+    (DEP17, closes: #1082357).
+
+ -- Laszlo Boszormenyi (GCS) <gcs@debian.org>  Sat, 21 Sep 2024 14:06:04 +0200
+
+fuse3 (3.14.0-9) unstable; urgency=medium
+
+  * Fix FTBFS due to the fuse transitional package.
+
+ -- Laszlo Boszormenyi (GCS) <gcs@debian.org>  Sun, 15 Sep 2024 08:00:33 +0200
+
+fuse3 (3.14.0-8) unstable; urgency=medium
+
+  [ Jeremy Bícha <jeremy.bicha@canonical.com> ]
+  * Provide fuse transitional package for upgrade (closes: #918984, #927291,
+    #1074767, #1081537).
+
+ -- Laszlo Boszormenyi (GCS) <gcs@debian.org>  Fri, 13 Sep 2024 19:31:58 +0200
+
+fuse3 (3.14.0-7) unstable; urgency=medium
+
+  [ Guillem Jover ]
+  * Use canonical pathnames in initramfs hook (closes: #1079573).
+
+ -- Laszlo Boszormenyi (GCS) <gcs@debian.org>  Sun, 25 Aug 2024 13:39:34 +0200
+
+fuse3 (3.14.0-6) unstable; urgency=medium
+
+  [ Helmut Grohne ]
+  * Move aliased files to /usr (DEP17) (closes: #1073058).
+
+ -- Laszlo Boszormenyi (GCS) <gcs@debian.org>  Sun, 07 Jul 2024 07:17:03 +0200
+
+fuse3 (3.14.0-5) unstable; urgency=medium
+
+  * Fix 99-fuse3.rules path (closes: #1060067).
+  * Switch udev build dependency to systemd-dev (closes: #1060606).
+
+ -- Laszlo Boszormenyi (GCS) <gcs@debian.org>  Fri, 12 Jan 2024 16:46:21 +0100
+
 fuse3 (3.14.0-4) unstable; urgency=medium
 
   * Backport upstream fixes:

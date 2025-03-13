@@ -1,4 +1,3 @@
-revert_upgrade_of_fuse_kernel.h.patch
-update_header_name.patch
-Fix-max_threads-command-line-parameter-propagation.patch
-Fix_memory_leak_in_high_level_API.patch
+#revert_upgrade_of_fuse_kernel.h.patch
+#update_header_name.patch
+mount_fix_closing_logs.patch
