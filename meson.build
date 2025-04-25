@@ -1,28 +1,39 @@
-project('libfuse3', ['c'], version: '3.14.0',
-        meson_version: '>= 0.50',
+project('libfuse3', ['c'],
+        version: '3.17.1-rc1',  # Version with RC suffix
+        meson_version: '>= 0.51.0',
         default_options: [
             'buildtype=debugoptimized',
-            'cpp_std=c++11',
+            'c_std=gnu11',
+            'cpp_std=c++17',
             'warning_level=2',
         ])
 
+# Would be better to create the version string
+# from integers, i.e. concatenating strings instead
+# of splitting a string, but 'project' needs to be
+# the first meson.build keyword...
+
+# split version into base and rc
+version_parts = meson.project_version().split('-')
+base_version = version_parts[0]
+
+version_list = base_version.split('.')
+FUSE_MAJOR_VERSION = version_list[0]
+FUSE_MINOR_VERSION = version_list[1]
+FUSE_HOTFIX_VERSION = version_list[2]
+FUSE_RC_VERSION = version_parts.length() > 1 ? version_parts[1] : ''
 
 platform = host_machine.system()
 if platform == 'darwin'
   error('libfuse does not support OS-X.\n' +
-        'Take a look at http://osxfuse.github.io/ instead')
+        'Take a look at http://osxfuse.github.io/ or the more recent\n' +
+        'https://www.fuse-t.org/ instead')
 elif platform == 'cygwin' or platform == 'windows'
   error('libfuse does not support Windows.\n' +
         'Take a look at http://www.secfs.net/winfsp/ instead')       
 endif
 
 cc = meson.get_compiler('c')
-
-#
-# Feature detection, only available at libfuse compilation time,
-# but not for application linking to libfuse.
-#
-private_cfg = configuration_data()
 
 #
 # Feature detection, the resulting config file is installed
@@ -32,6 +43,11 @@ private_cfg = configuration_data()
 #       this config.
 #
 public_cfg = configuration_data()
+
+public_cfg.set('FUSE_MAJOR_VERSION', FUSE_MAJOR_VERSION)
+public_cfg.set('FUSE_MINOR_VERSION', FUSE_MINOR_VERSION)
+public_cfg.set('FUSE_HOTFIX_VERSION', FUSE_HOTFIX_VERSION)
+public_cfg.set('FUSE_RC_VERSION', FUSE_RC_VERSION)
 
 # Default includes when checking for presence of functions and
 # struct members
@@ -46,6 +62,11 @@ include_default = '''
 '''
 args_default = [ '-D_GNU_SOURCE' ]
 
+#
+# Feature detection, only available at libfuse compilation time,
+# but not for application linking to libfuse.
+#
+private_cfg = configuration_data()
 private_cfg.set_quoted('PACKAGE_VERSION', meson.project_version())
 
 # Test for presence of some functions
@@ -60,6 +81,8 @@ private_cfg.set('HAVE_SETXATTR',
         cc.has_function('setxattr', prefix: '#include <sys/xattr.h>'))
 private_cfg.set('HAVE_ICONV', 
         cc.has_function('iconv', prefix: '#include <iconv.h>'))
+private_cfg.set('HAVE_BACKTRACE',
+        cc.has_function('backtrace', prefix: '#include <execinfo.h>'))
 
 # Test if structs have specific member
 private_cfg.set('HAVE_STRUCT_STAT_ST_ATIM',
@@ -74,10 +97,10 @@ private_cfg.set('HAVE_STRUCT_STAT_ST_ATIMESPEC',
 #
 # Compiler configuration
 #
-add_project_arguments('-D_REENTRANT', '-DHAVE_LIBFUSE_PRIVATE_CONFIG_H', '-Wno-sign-compare',
+add_project_arguments('-D_REENTRANT', '-DHAVE_LIBFUSE_PRIVATE_CONFIG_H', '-Wno-sign-compare', '-D_FILE_OFFSET_BITS=64',
                       '-Wstrict-prototypes', '-Wmissing-declarations', '-Wwrite-strings',
                       '-fno-strict-aliasing', language: 'c')
-add_project_arguments('-D_REENTRANT', '-DHAVE_CONFIG_H', '-D_GNU_SOURCE',
+add_project_arguments('-D_REENTRANT', '-DHAVE_LIBFUSE_PRIVATE_CONFIG_H', '-D_GNU_SOURCE', '-D_FILE_OFFSET_BITS=64',
                      '-Wno-sign-compare', '-Wmissing-declarations',
                      '-Wwrite-strings', '-fno-strict-aliasing', language: 'cpp')
 
@@ -114,7 +137,7 @@ if not cc.compiles(code, args: [ '-O0' ])
   versioned_symbols = 0
 endif
 
-# The detection can be overriden, which is useful for other (above unhandled)
+# The detection can be overridden, which is useful for other (above unhandled)
 # libcs and also especially useful for testing
 if get_option('disable-libc-symbol-version')
      versioned_symbols = 0
@@ -151,6 +174,40 @@ else
      message('Disabling versioned libc symbols')
 endif
 
+# Older versions of musl libc don't unescape entries in /etc/mtab
+# Try to detect this behaviour, and work around, if necessary.
+detect_getmntent_needs_unescape = '''
+#define _GNU_SOURCE
+#include <mntent.h>
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+
+#define dir_space_tab "dir\\040space\\011tab"
+
+int main()
+{
+    const char *fake_mtab = "name " dir_space_tab " type opts 0 0\n";
+    FILE *f = fmemopen((void *)fake_mtab, strlen(fake_mtab) + 1, "r");
+    struct mntent *entp = getmntent(f);
+    fclose(f);
+    if(NULL == entp)
+        exit(EXIT_FAILURE);
+    if (0 == strcmp(entp->mnt_dir, dir_space_tab))
+        printf("needs escaping\n");
+    else
+        printf("no need to escape\n");
+}
+'''
+
+if not meson.is_cross_build()
+  result = cc.run(detect_getmntent_needs_unescape)
+  if result.compiled() and result.returncode() == 0 and result.stdout().strip() == 'needs escaping'
+    message('getmntent does not unescape')
+    add_project_arguments('-DGETMNTENT_NEEDS_UNESCAPING', language: 'c')
+  endif
+endif
+
 # Write private test results into fuse_config.h (stored in build directory)
 configure_file(output: 'fuse_config.h', configuration : private_cfg)
 
@@ -159,7 +216,7 @@ configure_file(output: 'fuse_config.h', configuration : private_cfg)
 # symbol (define) conflicts
 configure_file(output: 'libfuse_config.h',
                configuration : public_cfg,
-               install: true, install_dir: 'include/fuse3')
+               install: true, install_dir: join_paths(get_option('includedir'), 'fuse3'))
 
 # '.' will refer to current build directory, which contains config.h
 include_dirs = include_directories('include', 'lib', '.')
