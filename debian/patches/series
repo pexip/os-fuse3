@@ -1,3 +1,2 @@
-#revert_upgrade_of_fuse_kernel.h.patch
-#update_header_name.patch
-mount_fix_closing_logs.patch
+Fix_meson_function_tests.patch
+meson.build-make-special_funcs-check-more-reliable.patch
