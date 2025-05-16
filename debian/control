@@ -10,7 +10,7 @@ Build-Depends:
  systemd-dev,
  python3 <!nocheck>,
  python3-pytest <!nocheck>
-Standards-Version: 4.6.1
+Standards-Version: 4.7.2
 Homepage: https://github.com/libfuse/libfuse/wiki
 Rules-Requires-Root: binary-targets
 XS-Pexip-Upstream: http://deb.debian.org/debian/ trixie

@@ -9,7 +9,6 @@
   See the file COPYING.LIB
 */
 
-#include <stdbool.h>
 #define _GNU_SOURCE
 
 #include "fuse_config.h"
@@ -20,6 +19,8 @@
 #include "mount_util.h"
 #include "util.h"
 
+#include <stdint.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <stddef.h>
@@ -1997,25 +1998,6 @@ static bool want_flags_valid(uint64_t capable, uint64_t want)
 	return true;
 }
 
-/**
- * Get the wanted capability flags, converting from old format if necessary
- */
-static inline int convert_to_conn_want_ext(struct fuse_conn_info *conn,
-					   uint64_t want_ext_default)
-{
-	/* Convert want to want_ext if necessary */
-	if (conn->want != 0) {
-		if (conn->want_ext != want_ext_default) {
-			fuse_log(FUSE_LOG_ERR,
-				 "fuse: both 'want' and 'want_ext' are set\n");
-			return -EINVAL;
-		}
-		conn->want_ext |= conn->want;
-	}
-
-	return 0;
-}
-
 /* Prevent bogus data races (bogus since "init" is called before
  * multi-threading becomes relevant */
 static __attribute__((no_sanitize("thread")))
@@ -2177,11 +2159,12 @@ void do_init(fuse_req_t req, fuse_ino_t nodeid, const void *inarg)
 	se->got_init = 1;
 	if (se->op.init) {
 		uint64_t want_ext_default = se->conn.want_ext;
+		uint32_t want_default = fuse_lower_32_bits(se->conn.want_ext);
 		int rc;
 
 		// Apply the first 32 bits of capable_ext to capable
-		se->conn.capable =
-			(uint32_t)(se->conn.capable_ext & 0xFFFFFFFF);
+		se->conn.capable = fuse_lower_32_bits(se->conn.capable_ext);
+		se->conn.want = want_default;
 
 		se->op.init(se->userdata, &se->conn);
 
@@ -2190,7 +2173,8 @@ void do_init(fuse_req_t req, fuse_ino_t nodeid, const void *inarg)
 		 * se->conn.want_ext
 		 * Userspace might still use conn.want - we need to convert it
 		 */
-		rc = convert_to_conn_want_ext(&se->conn, want_ext_default);
+		rc = convert_to_conn_want_ext(&se->conn, want_ext_default,
+					      want_default);
 		if (rc != 0) {
 			fuse_reply_err(req, EPROTO);
 			se->error = -EPROTO;
@@ -3042,10 +3026,13 @@ static int _fuse_session_receive_buf(struct fuse_session *se,
 {
 	int err;
 	ssize_t res;
-	size_t bufsize = se->bufsize;
+	size_t bufsize;
 #ifdef HAVE_SPLICE
 	struct fuse_ll_pipe *llp;
 	struct fuse_buf tmpbuf;
+
+pipe_retry:
+	bufsize = se->bufsize;
 
 	if (se->conn.proto_minor < 14 ||
 	    !(se->conn.want_ext & FUSE_CAP_SPLICE_READ))
@@ -3091,6 +3078,13 @@ static int _fuse_session_receive_buf(struct fuse_session *se,
 			fuse_session_exit(se);
 			return 0;
 		}
+
+		/* FUSE_INIT might have increased the required bufsize */
+		if (err == EINVAL && bufsize < se->bufsize) {
+			fuse_ll_clear_pipe(se);
+			goto pipe_retry;
+		}
+
 		if (err != EINTR && err != EAGAIN)
 			perror("fuse: splice from device");
 		return -err;
@@ -3118,18 +3112,16 @@ static int _fuse_session_receive_buf(struct fuse_session *se,
 		struct fuse_bufvec dst = { .count = 1 };
 
 		if (!buf->mem) {
-			buf->mem = buf_alloc(se->bufsize, internal);
+			buf->mem = buf_alloc(bufsize, internal);
 			if (!buf->mem) {
 				fuse_log(
 					FUSE_LOG_ERR,
 					"fuse: failed to allocate read buffer\n");
 				return -ENOMEM;
 			}
-			buf->mem_size = se->bufsize;
-			if (internal)
-				se->buf_reallocable = true;
+			buf->mem_size = bufsize;
 		}
-		buf->size = se->bufsize;
+		buf->size = bufsize;
 		buf->flags = 0;
 		dst.buf[0] = *buf;
 
@@ -3159,21 +3151,21 @@ static int _fuse_session_receive_buf(struct fuse_session *se,
 
 fallback:
 #endif
+	bufsize = internal ? buf->mem_size : se->bufsize;
 	if (!buf->mem) {
-		buf->mem = buf_alloc(se->bufsize, internal);
+		bufsize = se->bufsize; /* might have changed */
+		buf->mem = buf_alloc(bufsize, internal);
 		if (!buf->mem) {
 			fuse_log(FUSE_LOG_ERR,
 				 "fuse: failed to allocate read buffer\n");
 			return -ENOMEM;
 		}
-		buf->mem_size = se->bufsize;
+
 		if (internal)
-			se->buf_reallocable = true;
+			buf->mem_size = bufsize;
 	}
 
 restart:
-	if (se->buf_reallocable)
-		bufsize = buf->mem_size;
 	if (se->io != NULL) {
 		/* se->io->read is never NULL if se->io is not NULL as
 		specified by fuse_session_custom_io()*/
@@ -3187,9 +3179,10 @@ restart:
 	if (fuse_session_exited(se))
 		return 0;
 	if (res == -1) {
-		if (err == EINVAL && se->buf_reallocable &&
-		    se->bufsize > buf->mem_size) {
-			void *newbuf = buf_alloc(se->bufsize, internal);
+		if (err == EINVAL && internal && se->bufsize > bufsize) {
+			/* FUSE_INIT might have increased the required bufsize */
+			bufsize = se->bufsize;
+			void *newbuf = buf_alloc(bufsize, internal);
 			if (!newbuf) {
 				fuse_log(
 					FUSE_LOG_ERR,
@@ -3198,8 +3191,7 @@ restart:
 			}
 			fuse_buf_free(buf);
 			buf->mem = newbuf;
-			buf->mem_size = se->bufsize;
-			se->buf_reallocable = true;
+			buf->mem_size = bufsize;
 			goto restart;
 		}
 
@@ -3241,6 +3233,13 @@ int fuse_session_receive_buf_internal(struct fuse_session *se,
 				      struct fuse_buf *buf,
 				      struct fuse_chan *ch)
 {
+	/*
+	 * if run internally thread buffers are from libfuse - we can
+	 * reallocate them
+	 */
+	if (unlikely(!se->got_init) && !se->buf_reallocable)
+		se->buf_reallocable = true;
+
 	return _fuse_session_receive_buf(se, buf, ch, true);
 }
 
