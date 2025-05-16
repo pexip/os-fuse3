@@ -1,3 +1,9 @@
+fuse3 (3.17.2-1+pexip25u1) pexip-trixie; urgency=medium
+
+  * New upstream release
+
+ -- Mark Hymers <mark.hymers@pexip.com>  Fri, 16 May 2025 08:56:21 +0100
+
 fuse3 (3.17.2-1) unstable; urgency=medium
 
   * New upstream release:
