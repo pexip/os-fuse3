@@ -10,7 +10,7 @@ include /usr/share/dpkg/architecture.mk
 
 export DEB_BUILD_MAINT_OPTIONS = hardening=+all
 
-ifneq (,$(filter $(DEB_HOST_ARCH), armel m68k powerpc))
+ifneq (,$(filter $(DEB_HOST_ARCH), arc armel m68k mips mipsel powerpc sh3 sh4 sparc))
    export DEB_LDFLAGS_MAINT_APPEND = -Wl,--as-needed -latomic
 endif
 
